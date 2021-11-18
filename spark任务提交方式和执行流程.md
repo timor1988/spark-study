@@ -22,7 +22,174 @@
 
 ![](image\结构图.png)
 
-## 二、Spark 运行流程
+## 二、spark 模式
+
+### 1、local模式
+
+spark-3.0.0-bin-hadoop3.2tgz解压缩，重命名为spark-local 进入spark-local文件夹
+
+```
+bin/spark-shell # 会自动生成一个sparkcontext，所以可以直接使用sc各种方法
+sc.textFile("data/word.txt").flatMap(_.split(" ")).map(word=>(word,1)).reduceByKey(_+_).collect()
+```
+
+本地提交应用
+
+```
+bin/spark-submit \
+--class org.apache.spark.examples.SparkPi \
+--master local[2] \
+./examples/jars/spark-examples_2.12-3.0.0.jar \
+10
+```
+
+ spark-examples_2.12-3.0.0.jar 运行的应用类所在的 jar 包，实际使用时，可以设定为自己打的 jar 包
+
+### 2、Standalone模式
+
+Spark 的 Standalone 模式体现了经典的 master-slave 模式。
+
+![](image\clipboard.png)
+
+开启步骤：
+
+1、解压缩文件
+
+```
+tar -zxvf spark-3.0.0-bin-hadoop3.2.tgz -C /opt/module 
+cd /opt/module 
+mv spark-3.0.0-bin-hadoop3.2 spark-standalone
+```
+
+2、修改配置文件
+
+1) 进入解压缩后路径的 conf 目录，修改 slaves.template 文件名为 slaves
+
+```
+mv slaves.template slaves
+```
+
+2) 修改 slaves 文件，添加 work 节点
+
+```
+hadoop102 hadoop103 hadoop104
+```
+
+3) 修改 spark-env.sh.template 文件名为 spark-env.sh
+
+```
+mv spark-env.sh.template spark-env.sh
+```
+
+4) 修改 spark-env.sh 文件，添加 JAVA_HOME 环境变量和集群对应的 master 节点
+
+```
+export JAVA_HOME=/opt/module/jdk1.8.0_144 SPARK_MASTER_HOST=hadoop102 SPARK_MASTER_PORT=7077
+```
+
+注意：7077 端口，相当于 hadoop3 内部通信的 8020 端口，此处的端口需要确认自己的 Hadoop配置。
+
+5) 分发 spark-standalone 目录
+
+```
+xsync spark-standalone
+```
+
+3、启动hadoop集群
+
+1、执行启动脚本
+
+```
+sbin/start-all.sh
+```
+
+2、查看三台服务器运行进程
+
+```
+jps
+```
+
+3、查看Master资源监控web UI界面 http://hadoop102:8080
+
+4、提交应用
+
+```
+bin/spark-submit \
+--class org.apache.spark.examples.SparkPi \
+--master spark://hadoop102:7077 \
+./examples/jars/spark-examples_2.12-3.0.0.jar \
+10
+```
+
+执行任务时，会产生多个 Java 进程:
+
+![](image\java进程.png)
+
+### 3 yarn模式
+
+1、解压缩
+
+将 spark-3.0.0-bin-hadoop3.2.tgz 文件上传到 linux 并解压缩，放置在指定位置。
+
+```
+tar -zxvf spark-3.0.0-bin-hadoop3.2.tgz -C /opt/module 
+cd /opt/module 
+mv spark-3.0.0-bin-hadoop3.2 spark-yarn
+```
+
+2、1) 修改 hadoop 配置文件/opt/module/hadoop/etc/hadoop/yarn-site.xml, 并分发
+
+```
+<!--是否启动一个线程检查每个任务正使用的物理内存量，如果任务超出分配值，则直接将其杀掉，默认 是 true --> 
+<property>    
+	<name>yarn.nodemanager.pmem-check-enabled</name>    
+	<value>false</value> 
+</property> 
+<!--是否启动一个线程检查每个任务正使用的虚拟内存量，如果任务超出分配值，则直接将其杀掉，默认 是 true --> 
+<property>    
+	<name>yarn.nodemanager.vmem-check-enabled</name>   
+	<value>false</value> 
+</property>
+```
+
+​	2) 修改 conf/spark-env.sh，添加 JAVA_HOME 和 YARN_CONF_DIR 配置
+
+```
+mv spark-env.sh.template spark-env.sh 
+...
+export JAVA_HOME=/opt/module/jdk1.8.0_144 
+YARN_CONF_DIR=/opt/module/hadoop/etc/hadoop
+```
+
+3、启动 HDFS 以及 YARN 集群
+
+```
+myhadoop.sh
+```
+
+4、提交应用
+
+```
+bin/spark-submit --class org.apache.spark.examples.SparkPi  --master yarn  --deploy-mode client  ./examples/jars/spark-examples_2.12-3.0.0.jar  10
+```
+
+### 四、windows本地模式
+
+执行解压缩文件路径下 bin 目录中的 spark-shell.cmd 文件
+
+资料\spark-3.0.0-bin-hadoop3.2\bin
+
+启动 Spark 本地环境
+
+在bin目录的dos窗口提交任务
+
+```
+spark-submit --class org.apache.spark.examples.SparkPi --master local[2] ../examples/jars/spark-examples_2.12-3.0.0.jar 10
+```
+
+
+
+## 三、Spark 运行流程
 
 ### 2.1 Spark on Yarn的Yarn-Client运行过程
 
@@ -71,4 +238,22 @@ YARN-client的工作流程分为以下几个步骤：
  1、YARN-Cluster模式下，Driver运行在AM(Application Master)中，它负责向YARN申请资源，并监督作业的运行状况。当用户提交了作业之后，就可以关掉Client，作业会继续在YARN上运行，因而YARN-Cluster模式不适合运行交互类型的作业；
 
   2、YARN-Client模式下，Application Master仅仅向YARN请求Executor，Client会和请求的Container通信来调度他们工作，也就是说Client不能离开。
+
+## 四、spark-submit 提交任务
+
+### 1、client模式
+
+```
+spark-submit --master yarn --executor-memory 6g   --driver-memory 5g --conf spark.pyspark.python=/usr/bin/python main.py
+```
+
+--deploy-mode DEPLOY_MODE   Whether to launch the driver program locally ("client") or
+                              on one of the worker machines inside the cluster ("cluster")
+                              (Default: client).
+
+### 2、cluster模式
+
+```
+spark-submit --master yarn --deploy-mode cluster --executor-memory 6g   --driver-memory 5g --conf spark.pyspark.python=/usr/bin/python main.py
+```
 

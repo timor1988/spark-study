@@ -46,6 +46,10 @@ $$0.9 spark.storage.safetyFraction * 0.6 spark.storage.memoryFraction * 12 machi
 
 ![](image\broadcast原理.png)
 
+### 3、DAG
+
+有向无环图
+
 
 
 ## 二、spark内存管理
@@ -342,6 +346,10 @@ spark 3.x新功能，如果spark.driver.log.persistToDfs.enabled 设置为 True,
 参数说明：该参数用于设置每个Executor进程的CPU core数量。这个参数决定了每个Executor进程并行执行task线程的能力。因为每个CPU core同一时间只能执行一个task线程，因此每个Executor进程的CPU core数量越多，越能够快速地执行完分配给自己的所有task线程。
 参数调优建议：Executor的CPU core数量设置为2~4个较为合适。同样得根据不同部门的资源队列来定，可以看看自己的资源队列的最大CPU core限制是多少，再依据设置的Executor数量，来决定每个Executor进程可以分配到几个CPU core。同样建议，如果是跟他人共享这个队列，那么num-executors * executor-cores不要超过队列总CPU core的1/3~1/2左右比较合适，也是避免影响其他同学的作业运行。
 
+#### 1.1 --total-executor-cores 
+
+指定所有executor使用的cpu核数。代表所提交应用所占用总core数量
+
 #### 2、spark.executor.heartbeatInterval
 
 默认=10s
@@ -375,7 +383,7 @@ If set to true (default), file fetching will use a local cache that is shared by
 
 As for --num-executors flag, you can even keep it at a very high value of 1000. It will still allocate only the number of containers that is possible to launch on each node. As and when your cluster resources increase your containers attached to your application will increase. The number of containers that you can launch per node will be limited by the amount of resources allocated to the nodemanagers on those nodes.
 
-所以这个还是来自动态分配。
+所以这个还是来自动态分配。只在yarn模式下有效。
 
 
 
@@ -521,6 +529,10 @@ file:///tmp/spark-events 默认位置。如果spark.eventLog.enabled=ture
 ```
 
 Whether to log Spark events, useful for reconstructing the Web UI after the application has finished.
+
+ps： 这两个参数应该在 spark-env.sh里配置，这样就可以开启历史服务。
+
+
 
 ### 3、spark.ui.enabled
 
@@ -731,3 +743,118 @@ spark.yarn.appMasterEnv.[EnvironmentVariableName]
  In `cluster` mode this controls the environment of the Spark driver.
 
 in `client` mode it only controls the environment of the executor launcher.
+
+
+
+## 二、spark核心编程
+
+并行度：所有的核数，真正的同时执行的任务数量。
+
+```
+defaultParallelism（默认并行度）
+scheduler.conf.getInt("spark.default.parallelism", totalCores)
+// spark在默认情况下，从配置对象中获取配置参数：spark.default.parallelism
+// 如果获取不到，那么使用totalCores属性，这个属性取值为当前运行环境的最大可用核数
+```
+
+其在源码中的位置
+
+ctrl + h 之后得到
+
+![](image\源码1.png)
+
+点击进入TaskSchedulerImlp类
+
+```
+override def defaultParallelism(): Int = backend.defaultParallelism()
+```
+
+其等于后台的defaultParallelism()
+
+继续 ctrl + h
+
+![](image\源码2.png)
+
+在本地后台类中 可以 find 找到：
+
+```
+ override def defaultParallelism(): Int =
+    scheduler.conf.getInt("spark.default.parallelism", totalCores)
+```
+
+
+
+### 1、RDD
+
+RDD（Resilient Distributed Dataset）叫做弹性分布式数据集，是 Spark 中最基本的数据处理模型。代码中是一个抽象类，它代表一个弹性的、不可变、可分区、里面的元素可并行计算的集合。
+
+**弹性**
+
+⚫ 存储的弹性：内存与磁盘的自动切换；
+
+⚫ 容错的弹性：数据丢失可以自动恢复；
+
+⚫ 计算的弹性：计算出错重试机制；
+
+⚫ 分片的弹性：可根据需要重新分片。
+
+➢ 分布式：数据存储在大数据集群不同节点上
+
+➢ 数据集：RDD 封装了计算逻辑，并不保存数据
+
+➢ 数据抽象：RDD 是一个抽象类，需要子类具体实现
+
+➢ 不可变：RDD 封装了计算逻辑，是不可以改变的，想要改变，只能产生新的 RDD，在新的 RDD 里面封装计算逻辑
+
+➢ 可分区、并行计算。读取完的数据放在对应的分区中，互不影响。
+
+![](image\rdd1.png)
+
+RDD的数据处理方式类似io流，有装饰者设计模式，RDD只有在collect的时候才执行操作。
+
+区别：RDD中间部分不存储数据。IO可以临时保存一部分数据。
+
+scala 生成RDD
+
+```
+package com.atguigu.bigdata.spark.core.rdd.builder
+
+import org.apache.spark.rdd.RDD
+import org.apache.spark.{SparkConf, SparkContext}
+
+object Spark01_RDD_Memory {
+  def main(args: Array[String]): Unit = {
+
+    // TODO 准备环境
+    val sparkConf = new SparkConf().setMaster("local[2]").setAppName("RDD")
+    val sc = new SparkContext(sparkConf)
+
+    // TODO 创建RDD
+    // 从内存中创建RDD，将内存中集合的数据作为处理的数据源
+    val seq = Seq[Int](1,2,3,4)
+
+    // parallelize : 并行
+    //val rdd: RDD[Int] = sc.parallelize(seq)
+    // makeRDD方法在底层实现时其实就是调用了rdd对象的parallelize方法。
+    val rdd: RDD[Int] = sc.makeRDD(seq)
+
+    rdd.collect().foreach(println)
+
+    // TODO 关闭环境
+    sc.stop()
+  }
+
+}
+```
+
+python 生成RDD
+
+```
+from pyspark import SparkContext
+sc = SparkContext("local", "First App")
+my_list = [(1,(1,2,3)),(2,(1,2,3)),(1,(3,4,5,6)),(2,(3,4,5,6))]
+rdd = sc.parallelize(my_list)
+rdd = rdd.groupByKey().mapValues(list)
+print(rdd.collect())
+```
+
