@@ -748,42 +748,6 @@ in `client` mode it only controls the environment of the executor launcher.
 
 ## 二、spark核心编程
 
-并行度：所有的核数，真正的同时执行的任务数量。
-
-```
-defaultParallelism（默认并行度）
-scheduler.conf.getInt("spark.default.parallelism", totalCores)
-// spark在默认情况下，从配置对象中获取配置参数：spark.default.parallelism
-// 如果获取不到，那么使用totalCores属性，这个属性取值为当前运行环境的最大可用核数
-```
-
-其在源码中的位置
-
-ctrl + h 之后得到
-
-![](image\源码1.png)
-
-点击进入TaskSchedulerImlp类
-
-```
-override def defaultParallelism(): Int = backend.defaultParallelism()
-```
-
-其等于后台的defaultParallelism()
-
-继续 ctrl + h
-
-![](image\源码2.png)
-
-在本地后台类中 可以 find 找到：
-
-```
- override def defaultParallelism(): Int =
-    scheduler.conf.getInt("spark.default.parallelism", totalCores)
-```
-
-
-
 ### 1、RDD
 
 RDD（Resilient Distributed Dataset）叫做弹性分布式数据集，是 Spark 中最基本的数据处理模型。代码中是一个抽象类，它代表一个弹性的、不可变、可分区、里面的元素可并行计算的集合。
@@ -856,5 +820,152 @@ my_list = [(1,(1,2,3)),(2,(1,2,3)),(1,(3,4,5,6)),(2,(3,4,5,6))]
 rdd = sc.parallelize(my_list)
 rdd = rdd.groupByKey().mapValues(list)
 print(rdd.collect())
+```
+
+### 2 并行度
+
+并行度：所有的核数，真正的同时执行的任务数量。
+
+```
+defaultParallelism（默认并行度）
+scheduler.conf.getInt("spark.default.parallelism", totalCores)
+// spark在默认情况下，从配置对象中获取配置参数：spark.default.parallelism
+// 如果获取不到，那么使用totalCores属性，这个属性取值为当前运行环境的最大可用核数
+```
+
+其在源码中的位置
+
+ctrl + h 之后得到
+
+![](image\源码1.png)
+
+点击进入TaskSchedulerImlp类
+
+```
+override def defaultParallelism(): Int = backend.defaultParallelism()
+```
+
+其等于后台的defaultParallelism()
+
+继续 ctrl + h
+
+![](image\源码2.png)
+
+在本地后台类中 可以 find 找到：
+
+```
+ override def defaultParallelism(): Int =
+    scheduler.conf.getInt("spark.default.parallelism", totalCores)
+```
+
+totalCores 的值为系统所有的cpu 核。
+
+### 3 分区
+
+#### 3.1 分区数的确定
+
+以序列化列表为例，读取文件时：分区数=并行度。
+
+```
+ // 【1，2】，【3，4】
+ //val rdd = sc.makeRDD(List(1,2,3,4), 2)
+ // 【1】，【2】，【3，4】
+ //val rdd = sc.makeRDD(List(1,2,3,4), 3)
+ // 【1】，【2,3】，【4,5】
+ val rdd = sc.makeRDD(List(1,2,3,4,5), 3)
+```
+
+#### 3.2 数据划分到哪个分区
+
+```
+ case _ =>
+        val array = seq.toArray // To prevent O(n^2) operations for List etc
+        positions(array.length, numSlices).map { case (start, end) =>
+            array.slice(start, end).toSeq
+        }.toSeq
+```
+
+通过position得到一个rdd,然后对rdd中的数组进行切分。
+
+```
+ def positions(length: Long, numSlices: Int): Iterator[(Int, Int)] = {
+      (0 until numSlices).iterator.map { i =>
+        val start = ((i * length) / numSlices).toInt
+        val end = (((i + 1) * length) / numSlices).toInt
+        (start, end)
+      }
+    }
+```
+
+此时 length=5，numSlices=3
+
+通过一个迭代器获取每个分区的起止位置
+
+```
+start = 0*5/3=0
+end = 1*5/3 = 1   ----------> [0,1]
+# 第二个分区
+start = 1*5/3 = 1
+end = 2*5/3 = 3  ----------> [1,3]
+# 第三个分区
+start = 2*5/3 = 3
+end = 3*5/3 = 5 ----------->  [3,5]
+```
+
+### 3.3 读取文件时分区的确定
+
+```
+ val rdd = sc.textFile("input/num.txt", 2)
+```
+
+```
+minPartitions : 最小分区数量   = math.min(defaultParallelism, 2)
+真正的分区数量比2大。
+Spark读取文件，底层其实使用的就是Hadoop的读取方式。
+分区数量的计算方式：
+   totalSize = 7 
+   goalSize =  7 / 2 = 3（byte）
+   7 / 3 = 2...1 (1.1) + 1 = 3(分区)
+```
+
+totalSize：#
+
+
+
+所有文件字节数之和
+
+```
+for (FileStatus file: files) {                // check we have valid files
+      if (file.isDirectory()) {
+        throw new IOException("Not a file: "+ file.getPath());
+      }
+      totalSize += file.getLen();
+    }
+```
+
+goalSize：每个分区需要存放的字节数
+
+```
+ long goalSize = totalSize / (numSplits == 0 ? 1 : numSplits) = 3byte
+```
+
+hadoop 有 1.1的概念：如果剩余部分 >10%，就产生新的分区。
+
+数据分区时候数据如何分配
+
+```
+1. 数据以行为单位进行读取
+spark读取文件，采用的是hadoop的方式读取，所以一行一行读取，和字节数没有关系
+2. 数据读取时以偏移量为单位,偏移量不会被重复读取
+/*
+   1@@   => 012
+   2@@   => 345
+   3     => 6
+
+ */
+// 3. 数据分区的偏移量范围的计算
+// 0 => [0, 3]  => 12
+// 1 => [3, 6]  => 3
+// 2 => [6, 7]  =>
 ```
 
