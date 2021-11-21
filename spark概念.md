@@ -969,3 +969,164 @@ spark读取文件，采用的是hadoop的方式读取，所以一行一行读取
 // 2 => [6, 7]  =>
 ```
 
+
+
+## 三、阶段的划分
+
+### 1、依赖关系
+
+![](C:\Users\18177\Desktop\javaprojects\spark-study\image\依赖关系.png)
+
+RDD不保存数据，为了提供容错性，需要将RDD的关系保存下来。一旦出现错误，可以根据血缘关系将数据源重新读取进行计算。
+
+**窄依赖**表示每一个父(上游)RDD 的 Partition 最多被子（下游）RDD 的一个 Partition 使用，窄依赖我们形象的比喻为独生子女。
+
+**宽依赖**表示同一个父（上游）RDD 的 Partition 被多个子（下游）RDD 的 Partition 依赖，会引起 Shuffle，总结：宽依赖我们形象的比喻为多生。
+
+### 2、RDD阶段划分
+
+DAG（Directed Acyclic Graph）有向无环图是由点和线组成的拓扑图形，该图形具有方向，不会闭环。例如，DAG 记录了 RDD 的转换过程和任务的阶段。
+
+shuffle和阶段有必然的关系。
+
+上一个阶段结束了，才开始下一个阶段。
+
+阶段的数量=shuffle数量+1 
+
+ShuffleMapStage + ResultStage
+
+
+
+## 四、RDD任务划分
+
+### 4.1 任务划分流程
+
+RDD 任务切分中间分为：Application、Job、Stage 和 Task
+
+⚫ Application：初始化一个 SparkContext 即生成一个 Application；
+
+ ⚫ Job：一个 Action 算子就会生成一个 Job；
+
+ ⚫ Stage：Stage 等于宽依赖(ShuffleDependency)的个数加 1； 
+
+⚫ Task：一个 Stage 阶段中，最后一个 RDD 的分区个数就是 Task 的个数。
+
+注意：Application->Job->Stage->Task 每一层都是 1 对 n 的关系。
+
+
+
+DAGScheduler类的handleJobSubmitted方法中，有一个提交阶段的的方法：
+
+```
+var finalStage: ResultStage = null
+	……
+finalStage = createResultStage(finalRDD, func, partitions, jobId, callSite)
+	……
+submitStage(finalStage)
+```
+
+ submitStage方法用于提交最终的ResultStage阶段，由于在最终的ResultStage可能包含了多个上级阶段，所以此处就相当于是提交整个应用程序的全部阶段。查看一下该方法的源码：
+
+```
+private def submitStage(stage: Stage): Unit = {
+  val jobId = activeJobForStage(stage)
+  if (jobId.isDefined) {
+    logDebug(s"submitStage($stage (name=${stage.name};" +
+      s"jobs=${stage.jobIds.toSeq.sorted.mkString(",")}))")
+    if (!waitingStages(stage) && !runningStages(stage) && !failedStages(stage)) {
+      val missing = getMissingParentStages(stage).sortBy(_.id)
+      logDebug("missing: " + missing)
+      if (missing.isEmpty) {  
+        logInfo("Submitting " + stage + " (" + stage.rdd + "), which has no missing parents")
+        submitMissingTasks(stage, jobId.get)
+      } else {
+        for (parent <- missing) {
+          submitStage(parent)
+        }
+        waitingStages += stage
+      }
+    }
+  } else {
+    abortStage(stage, "No active job for stage " + stage.id, None)
+  }
+}
+```
+
+ 该方法的内部核心逻辑是先获取当前阶段的的所有父级阶段，如果其父级阶段为空那么直接执行submitMissingTasks方法，如果不为空，那么递归执行submitStage方法，只不过传入的参数是当前阶段的父级阶段，一直递归直到找到没有上级阶段的阶段，最终没有上级阶段的那个阶段会执行submitMissingTasks方法。下面查看一下该方法的核心源码部分：
+
+```
+case stage: ShuffleMapStage =>
+ partitionsToCompute.map { id =>
+          val locs = taskIdToLocations(id)
+          val part = partitions(id)
+          stage.pendingPartitions += id
+          new ShuffleMapTask(stage.id, stage.latestInfo.attemptNumber,
+            taskBinary, part, locs, properties, serializedTaskMetrics, Option(jobId),
+            Option(sc.applicationId), sc.applicationAttemptId, stage.rdd.isBarrier())
+        }
+
+
+
+case stage: ResultStage
+ partitionsToCompute.map { id =>
+          val p: Int = stage.partitions(id)
+          val part = partitions(p)
+          val locs = taskIdToLocations(id)
+          new ResultTask(stage.id, stage.latestInfo.attemptNumber,
+            taskBinary, part, locs, id, properties, serializedTaskMetrics,
+            Option(jobId), Option(sc.applicationId), sc.applicationAttemptId,
+            stage.rdd.isBarrier())
+        }
+```
+
+核心代码的逻辑在于根据传入的stage进行模式匹配，会根据不同类型的Satge创建的不同的Task，那么首先会计算分区得到分区索引集合，然后使用map方法将根据分区id创建xxxMapTask对象，有几个分区id就创建几个xxxMapTask对象。partitionsToCompute是stage.findMissingPartitions()的返回值，那么查看其源码，stage是一个抽象类的引用，调用的这个方法具体的实现在具体的xxxMapStage类中。分别查看一下在resultstage和中的源码：
+
+ResultStage：
+
+```
+override def findMissingPartitions(): Seq[Int] = {  
+	val job = activeJob.get(0 until job.numPartitions).filter(id => !job.finished(id)) }
+```
+
+ShuffleMapStage：
+
+```
+override def findMissingPartitions(): Seq[Int] = {  
+	mapOutputTrackerMaster.findMissingPartitions(shuffleDep.shuffleId).getOrElse(0 until numPartitions) }
+```
+
+所以可以看出，partitionsToCompute就是一个分区索引的集合。ResultStage和ShuffleMapStage的numPartitions的值计算方式一样，都是来自于它们所处阶段的最后一个rdd的分区数量值：
+
+job.numPartitions值：
+
+```
+val numPartitions = finalStage match { 
+	case r: ResultStage => r.partitions.length  
+	case m: ShuffleMapStage => m.rdd.partitions.length }
+```
+
+其中，numPartitions的值：
+
+```
+val numPartitions = rdd.partitions.length
+```
+
+应用程序的总任务数量等于每个阶段的最后一个rdd的分区数量之和。
+
+### 4.2 **Spark Stage级调度**
+
+Job由最终的RDD和Action方法封装而成，SparkContext将Job交给DAGScheduler提交，它会根据RDD的血缘关系构成的DAG进行切分，将一个Job划分为若干Stages，具体划分策略是，由最终的RDD不断通过依赖回溯判断父依赖是否是宽依赖，即以Shuffle为界，划分Stage，窄依赖的RDD之间被划分到同一个Stage中，可以进行pipeline式的计算，如上图紫色流程部分。划分的Stages分两类，一类叫做ResultStage，为DAG最下游的Stage，由Action方法决定，另一类叫做ShuffleMapStage，为下游Stage准备数据。
+
+Job由saveAsTextFile触发，该Job由RDD-3和saveAsTextFile方法组成，根据RDD之间的依赖关系从RDD-3开始回溯搜索，直到没有依赖的RDD-0，在回溯搜索过程中，RDD-3依赖RDD-2，并且是宽依赖，所以在RDD-2和RDD-3之间划分Stage，RDD-3被划到最后一个Stage，即ResultStage中，RDD-2依赖RDD-1，RDD-1依赖RDD-0，这些依赖都是窄依赖，所以将RDD-0、RDD-1和RDD-2划分到同一个Stage，即ShuffleMapStage中，实际执行的时候，数据记录会一气呵成地执行RDD-0到RDD-2的转化。不难看出，其本质上是一个深度优先搜索算法。
+
+一个Stage是否被提交，需要判断它的父Stage是否执行，只有在父Stage执行完毕才能提交当前Stage，如果一个Stage没有父Stage，那么从该Stage开始提交。Stage提交时会将Task信息（分区信息以及方法等）序列化并被打包成TaskSet交给TaskScheduler，一个Partition对应一个Task，另一方面TaskScheduler会监控Stage的运行状态，只有Executor丢失或者Task由于Fetch失败才需要重新提交失败的Stage以调度运行失败的任务，其他类型的Task失败会在TaskScheduler的调度过程中重试。
+
+相对来说DAGScheduler做的事情较为简单，仅仅是在Stage层面上划分DAG，提交Stage并监控相关状态信息。TaskScheduler则相对较为复杂
+
+**Spark Task级调度**
+
+Spark Task的调度是由TaskScheduler来完成，由前文可知，DAGScheduler将Stage打包到TaskSet交给TaskScheduler，TaskScheduler会将TaskSet封装为TaskSetManager加入到调度队列中
+
+Spark任务提交全流程
+
+![](image\提交流程.png)
