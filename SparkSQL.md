@@ -443,6 +443,14 @@ sql = """
 
 优化：当对 3 个或者更多表进行 join 连接时，如果每个 on 子句都使用相同的连接键的话，那么只会产生一个 MapReduce job。
 
+#### 10.6 left semi join
+
+left semi join是以左表为准，在右表中查找匹配的记录，如果查找成功，则仅返回左边的记录，否则返回null
+
+#### 10.7 left anti join
+
+left anti join与left semi join相反，是以左表为准，在右表中查找匹配的记录，如果查找成功，则返回null，否则仅返回左边的记录
+
 ### 11、排序
 
 #### 11.1 order by
@@ -598,5 +606,314 @@ df_pivot.show()
 |英语|  77|  90|  24|  90|
 |语文|  92|  87|  33|  87|
 +----+----+----+----+----+
+```
+
+### 16、EXPLODE 一行变多行
+
+EXPLODE(col)：将 hive 一列中复杂的 Array 或者 Map 结构拆分成多行。
+
+friends 字段的值 ["bingbing","timor"]
+
+```
+select explode(friends) from test
+```
+
+配合lateral view 使用
+
+### 17、LATERAL VIEW
+
+用法：LATERAL VIEW udtf(expression) tableAlias AS columnAlias
+
+解释：用于和 split, explode 等 UDTF 一起使用，它能够将一列数据拆成多行数据，在此基础上可以对拆分后的数据进行聚合。
+
+数据准备
+
+```
+movie                     category
+疑犯追踪                   悬疑、动作、科幻、剧情
+lit to me                 悬疑、警匪、动作、心理、剧情
+火影                       动作、战争、灾难
+```
+
+将电影分类中的数组数据展开结果如下
+
+```
+《疑犯追踪》 悬疑
+《疑犯追踪》 动作
+《疑犯追踪》 科幻
+《疑犯追踪》 剧情
+《Lie to me》 悬疑
+《Lie to me》 警匪
+《Lie to me》 动作
+《Lie to me》 心理
+《Lie to me》 剧情
+《火影》 战争
+《火影》 动作
+《火影》 灾难
+```
+
+代码如下：
+
+```
+select movie,category_name
+from movie_info
+lateral VIEW
+    explode(split(category,",")) movie_info_tmp as category_name
+```
+
+movie_info_tmp ：侧写表别名。侧写表使得炸列后的字段和原表保留关联。侧写表是对原表，即movie_info表进行侧写，需要放在from movie_info 之后。
+
+category_name ：炸出来的字段的别名。
+
+如果需要原表字段+炸裂后的数据，就需要侧写。如果不需要原表数据，则直接：
+
+```
+select explode(split(category,",")) from movie_info
+```
+
+### 18、concat
+
+1、CONCAT(string A/col, string B/col…)：返回输入字符串连接后的结果，支持任意个输入字符串
+
+```
+select concat(money,'元')from table1;
+```
+
+2、CONCAT_WS(separator, str1, str2,...)：它是一个特殊形式的 CONCAT()。第一个参数剩余参数间的分隔符。分隔符可以是与剩余参数一样的字符串。如果分隔符是 NULL，返回值也将为 NULL。这个函数会跳过分隔符参数后的任何 NULL 和空字符串。分隔符将被加到被连接的字符串之间;
+
+既然有concat函数为什么又有concat_ws呢？其实concat_ws是针对concat中一种特殊情形引入的，就是如果想要输出的字段用相同的字符进行分隔，应用concat函数就显得很笨重，你需要这样concat(s1,sep_str,s2,sep_str,s3.......)，这样的sql显得臃肿重复，这个时候你就需要用concat_ws函数了。concat_ws使用场景：输出字段用相同字符分隔的情形。
+
+```
+select concat_ws('|',name,age,sex,grade,telno) from table2;
+```
+
+3、COLLECT_SET(col)：函数只接受基本数据类型，它的主要作用是将某字段的值进行去重汇总，产生 Array 类型字段。
+
+Hive中collect相关的函数有collect_list和collect_set。它们都是将分组中的某列转为一个数组返回，不同的是collect_list不去重而collect_set去重。
+
+```
+select username, collect_list(video_name) from t_visit_video group by username;
+观看过视频列表有重复的，所以应该增加去重，使用collect_set
+select username, collect_set(video_name) from t_visit_video group by username;
+```
+
+
+
+### 19、内联表 VALUES
+
+```
+-- 具有表别名的三行
+select * from
+ values ("one",1),("two",2),("three",null)
+ as data(a,b);
++-----+----+
+|    a|   b|
++-----+----+
+|  one|   1|
+|  two|   2|
+|three|null|
++-----+----+
+```
+
+
+
+## 三、窗口函数
+
+### 1 OVER(）
+
+指定分析函数工作的数据窗口大小，这个数据窗口大小可能会随着行的变而变化。
+
+需要原始数据，又需要聚合之后的结果，使用窗口函数
+
+为什么over可以呢，其和groupby 有本质区别。窗口函数，每一条数据有自己的一个窗口。
+
+窗函数的结构为：
+
+```
+window_function OVER
+( [  { PARTITION | DISTRIBUTE } BY partition_col_name = partition_col_val ( [ , ... ] ) ]
+  { ORDER | SORT } BY expression [ ASC | DESC ] [ NULLS { FIRST | LAST } ] [ , ... ]
+  [ window_frame ] )
+```
+
+参数：
+
+- window_function（窗口函数）
+  - Ranking Functions：排序函数 `RANK | DENSE_RANK | PERCENT_RANK | NTILE | ROW_NUMBER`
+  - Analytic Functions：解析函数 `CUME_DIST | LAG | LEAD`
+  - Aggregate Functions：聚合函数 `MAX | MIN | COUNT | SUM | AVG | ...`
+
+有关 Spark 聚合函数的完整列表，请参阅内置聚合函数文档。
+
+- window_frame（窗框）：指定窗口的起始行和结束位置
+  - 语法：`{ RANGE | ROWS } { frame_start | BETWEEN frame_start AND frame_end }`
+  - frame_start 和 frame_end 具有以下语法：`UNBOUNDED PRECEDING | offset PRECEDING | CURRENT ROW | offset FOLLOWING | UNBOUNDED FOLLOWING`
+  - 其中 offset 是指定相对于当前行位置的偏移。如果省略 frame_end，则默认为当前行。
+
+参数
+
+```
+CURRENT ROW：当前行
+n PRECEDING：往前 n 行数据
+n FOLLOWING：往后 n 行数据
+UNBOUNDED：起点，
+UNBOUNDED PRECEDING 表示从前面的起点，
+UNBOUNDED FOLLOWING 表示到后面的终点
+LAG(col,n,default_val)：往前第 n 行数据
+LEAD(col,n, default_val)：往后第 n 行数据
+NTILE(n)：把有序窗口的行分发到指定数据的组中，各个组有编号，编号从 1 开始，对
+于每一行，NTILE 返回此行所属的组的编号。注意：n 必须为 int 类型。
+partition by 根据字段分区  + order by 排序
+partition by 字段，限定开窗的最大范围。
+
+distribute by  + sort by  是另一组。
+```
+
+### 2 实例
+
+```
+name，orderdate，cost
+jack,2017-01-01,10
+tony,2017-01-02,15
+jack,2017-02-03,23
+tony,2017-01-04,29
+jack,2017-01-05,46
+jack,2017-04-06,42
+tony,2017-01-07,50
+jack,2017-01-08,55
+mart,2017-04-08,62
+mart,2017-04-09,68
+neil,2017-05-10,12
+mart,2017-04-11,75
+neil,2017-06-12,80
+mart,2017-04-13,94
+```
+
+**需求**
+
+（1）查询在 2017 年 4 月份购买过的顾客及总人数
+
+（2）查询顾客的购买明细及月购买总额
+
+（3）上述的场景, 将每个顾客的 cost 按照日期进行累加
+
+（4）查询每个顾客上次的购买时间
+
+（5）查询前 20%时间的订单信息
+
+
+
+#### (1)查询在 2017 年 4 月份购买过的顾客及总人数
+
+```
+select name,count(*) over () 
+from business 
+where substring(orderdate,1,7) = '2017-04' 
+group by name
+```
+
+over()表示窗口里没有东西。而 count是在窗口内部进行count，此时表示count所有行。
+
+over()也是分组，和group by区别：group by 多对一。 over 一一对应。
+
+group by更强调的是一个整体，就是组，只能显示一个组里满足聚合函数的一条记录。
+
+over 在整体后更强调个体，能显示组里所有个体的记录
+
+#### (2)查询顾客的购买明细及月购买总额
+
+购买明细只做查询。
+
+月购买总额，每个顾客，在每个月内进行sum。
+
+```
+select name,orderdate,cost,sum(cost) 
+over(partition by month(orderdate))
+from business
+```
+
+![](image\over1.png)
+
+#### (3) 将每个顾客的 cost 按照日期进行累加
+
+![](image\over2.png)
+
+```
+select 
+    name,orderdate,
+    cost,
+    sum(cost) over(partition by name order by orderdate 
+    rows between UNBOUNDED PRECEDING and current row)
+from business;    
+```
+
+UNBOUNDED PRECEDING 表示从前面的起点
+
+CURRENT ROW：当前行
+
+即：由起点到当前行的聚合。
+
+rows 必须跟在 order by 子句之后，对排序的结果进行限制，使用固定的行数来限制分区中的数据行数量。
+
+ps:开窗的时候，如果涉及到了排序，两条相同的数据的窗口是一样的。这会造成意外事件。
+
+#### (4)查看顾客上次的购买时间
+
+即把时间字段下移一行，作为新的一列。或者说，当前行，获取上一行的orderdate字段，没有则为null。
+
+```
+select 
+    name,orderdate,
+    lag(orderdate,1,默认值，不给则为null)
+    over(partition by name order by orderdate)
+```
+
+LAG(col,n,default_val)：往前第 n 行数据，没有则赋值默认值 default_val，如果没有给定，则为null
+
+ps: 日志分析中，单跳转化率。上一个网页到下一个网页，涉及两条日志，进行拼接的时候，就需要lag。
+
+#### (5)查询前 20%时间的订单信息
+
+分五个组，取编号=1的组即为前20%。
+
+NTILE(n)：把有序窗口的行分发到指定数据的组中，各个组有编号，编号从 1 开始，对于每一行，NTILE 返回此行所属的组的编号。注意：n 必须为 int 类型。
+
+n 代表分几个组。
+
+```
+select 
+    name,
+    orderdate,
+    cost,
+    ntile(5) 
+    over(order by orderdate) groupId
+from business;    t1
+
+select 
+    name,
+    orderdate,
+    cost
+from t1
+where groupId=1; 
+```
+
+### 2 rank()
+
+rank()：分数相同，不去掉数据(并排，假设有2、3分数相同，都排第二名，下面一个就是第四名，没有第三)  12245
+
+dense_rank()：dense_rank()和rank over()很像，但学生成绩并列后并不会空出并列所占的名次 12234
+
+ROW_NUMBER() ：不并排，假设二三分数相同，依然会排出第二名、第三名  12345
+
+使用rank over()的时候，空值是最大的，如果排序字段为null, 可能造成null字段排在最前面，影响排序结果
+
+```
+select name,
+subject,
+score,
+rank() over(partition by subject order by score desc) rp,
+dense_rank() over(partition by subject order by score desc) drp,
+row_number() over(partition by subject order by score desc) rmp
+from score;
 ```
 
