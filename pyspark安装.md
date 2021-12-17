@@ -16,7 +16,20 @@ CLASSPATH：xxx\java\lib
 
 ### 2、安装spark和hadoop
 
-下载，然后解压、配置环境变量
+下载 `spark-2.4.7-bin-hadoop2.7.tgz`
+
+### 2.2 安装 spark2.4.7版本，和服务器版本一致
+
+下载地址：https://archive.apache.org/dist/spark/spark-2.4.7/
+
+然后解压、配置环境变量
+
+```
+SPARK_HOME =  D:\software\spark-2.4.7-bin-hadoop2.7
+```
+
+
+
 ```
 SPARK_HOME
 Path
@@ -24,13 +37,18 @@ HADOOP_HOME
 Path
 ```
 
-将`C:\SoftWare\spark-3.0.1-bin-hadoop2.7\python\lib`中的
+将`C:\SoftWare\spark-2.4.7-bin-hadoop2.7\python\lib`中的
 `pyspark`和`py4j-0.10.9-src`复制到
 `C:\Users\18177\Anaconda3\Lib\site-packages`文件夹下，
 同时，删除该文件夹下的pyspark 和 py4j文件夹。
 解压这两个压缩文件，得到新的pyspark 和 py4j文件夹。解压完成，删除两个压缩文件。
 
+
+
+
+
 ### 3、下载winutil.exe
+
 将winutils.exe文件放到Hadoop的bin目录下（C:\SoftWare\hadoop-2.7.1\bin），然后以管理员的身份打开cmd，然后通过cd命令进入到Hadoop的bin目录下，然后执行以下命令：
 
 winutils.exe chmod 777 c:\tmp\Hive
