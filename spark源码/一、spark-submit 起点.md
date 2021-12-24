@@ -1,4 +1,6 @@
-## 一、spark-submit 起点
+
+
+## 一、环境准备即 spark-submit 的起点
 
 ```
 bin/spark-submit \
@@ -10,7 +12,7 @@ bin/spark-submit \
 
 会产生一个 SparkSubmit进程
 
-JVM---> Process(SparkSubmit)
+JVM---> Process(SparkSubmit)  。等于启动了一个java进程
 
 开始执行 SparkSubmit.main()
 
@@ -144,7 +146,9 @@ val (childArgs, childClasspath, sparkConf, childMainClass) = prepareSubmitEnviro
 childMainClass = "org.apache.spark.deploy.yarn.YarnClusterApplication"   
 ```
 
-### 
+构建了YarnClusterApplication对象：
+
+![](D:\学习\spark-study\image\YarnCluserApplication.png)
 
 ## 五、提交ApplicationMaster
 
@@ -173,7 +177,7 @@ sparksubmit 里面得到application 即  3.1中的app之后，会调用start方�
 
 conf为四中得到的`sparkConf`
 
-### 5.2 Client类
+### 5.2 创建YarnClient
 
 属性1：yarnClient
 
@@ -181,7 +185,7 @@ conf为四中得到的`sparkConf`
 private val yarnClient = YarnClient.createYarnClient
 ```
 
-会创建一个YarnClient
+通过YarnClientImpl创建一个YarnClient
 
 ```
 public static YarnClient createYarnClient() {
@@ -189,6 +193,19 @@ public static YarnClient createYarnClient() {
     return client;
   }
 ```
+
+在YarnClientImpl中有rmClient
+
+```
+// YarnClientImpl类里面有rmClient,即resourcemanager
+protected ApplicationClientProtocol rmClient;
+```
+
+到这里，有了yarnClient，有了yarn客户端就有yarn服务端。rmClient是yarn调度节点，yarn集群，resourcemanager。
+
+建立了yarnClient和 ResourceManager的连接。
+
+
 
 ### 5.3 Client类的run()方法
 
@@ -248,7 +265,7 @@ appId = newAppResponse.getApplicationId()
 amClass = "org.apache.spark.deploy.yarn.ApplicationMaster"
 ```
 
-即执行的进程其实是
+即执行的进程其实是。
 
 ```
 /bin/java org.apache.spark.deploy.yarn.ApplicationMaster
@@ -260,22 +277,28 @@ amClass = "org.apache.spark.deploy.yarn.ApplicationMaster"
 amContainer.setCommands(printableCommands.asJava)
 ```
 
-所谓的提交：封装了一些指令的容器提交给ResourceManger。
+所谓的提交：把封装了一些指令的容器提交给ResourceManger。
+
+建立了和resourcemanager连接之后，再提交Application----->
 
 ResourceManager收到这些指令之后，会在某个NodeManager启动 ApplicationMaster。最后提交并监控应用
 
 ```
 // Finally, submit and monitor the application
-  yarnClient.submitApplication(appContext)
+  yarnClient.submitApplication(appContext) # appContext包含配置的参数
 ```
 
 综上所述：ApplicationMaster已经提交到了某个节点
+
+<img src="image\ResourceManager.png" style="zoom:75%;" />
+
+
 
 ## 六、 ApplicationMaster 启动运行
 
 ### 6.1 启动Driver线程
 
-ApplicationMaster是一个进行，所以有main方法。全局搜索`org.apache.spark.deploy.yarn.ApplicationMaster`。找到其main方法
+ApplicationMaster是一个进程，所以有main方法。全局搜索`org.apache.spark.deploy.yarn.ApplicationMaster`。找到其main方法
 
 ```
   def main(args: Array[String]): Unit = {
@@ -321,7 +344,7 @@ private val client = new YarnRMClient()
 override def run(): Unit = System.exit(master.run())
 ```
 
-run方法的主要代码段：
+run方法的主要代码段：集群模式会执行 runDriver()
 
 ```
  if (isClusterMode) {
@@ -336,7 +359,7 @@ run方法的主要代码段：
 因为是cluster模式，执行runDriver()。runDriver方法的主要代码1：
 
 ```
-  userClassThread = startUserApplication()
+  userClassThread = startUserApplication() #启动用户应用程序
 ```
 
 startUserApplication()方法的主要代码1：
@@ -396,11 +419,15 @@ runDriver方法主要代码段2
 
 runDriver方法主要代码段3:
 
+#### 注册AM，申请资源
+
 ```
   registerAM(host, port, userConf, sc.ui.map(_.webUrl), appAttemptId)
 ```
 
 ApplicationMaster启动之后，需要向yarn申请资源。和ResourceManager进行交互，就需要向ResourceManager注册自己。
+
+#### 返回可用资源列表
 
 runDriver方法主要代码段4:
 
@@ -420,6 +447,8 @@ createAllocator(driverRef, userConf, rpcEnv, appAttemptId, distCacheConf)
     allocator.allocateResources()
 ```
 
+#### 处理可用于分配的容器
+
 其中 allocator.allocateResources()核心代码：
 
 ```
@@ -432,6 +461,8 @@ if (allocatedContainers.size > 0) {
 ```
 
 <img src="image\clipboard.png" style="zoom:75%;" />
+
+
 
 执行的task发给1还是9呢，就需要选择。
 
@@ -455,7 +486,7 @@ handleAllocatedContainers 核心代码1: 分配完成之后，开始运行已经
          launcherPool.execute(()
 ```
 
-关于启动executor
+#### 启动executor前奏
 
 把需要的配置参数传进去，
 

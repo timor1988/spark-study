@@ -975,7 +975,7 @@ spark读取文件，采用的是hadoop的方式读取，所以一行一行读取
 
 ### 1、依赖关系
 
-![](C:\Users\18177\Desktop\javaprojects\spark-study\image\依赖关系.png)
+![](\image\依赖关系.png)
 
 RDD不保存数据，为了提供容错性，需要将RDD的关系保存下来。一旦出现错误，可以根据血缘关系将数据源重新读取进行计算。
 
@@ -1130,3 +1130,106 @@ Spark Task的调度是由TaskScheduler来完成，由前文可知，DAGScheduler
 Spark任务提交全流程
 
 ![](image\提交流程.png)
+
+## 五、自定义分区器
+
+只有 Key-Value 类型的 RDD 才有分区器，非 Key-Value 类型的 RDD 分区的值是 None。
+
+每个 RDD 的分区 ID 范围：0 ~ (numPartitions - 1)，决定这个值是属于那个分区的。
+
+1、Hash 分区：对于给定的 key，计算其 hashCode,并除以分区个数取余
+
+2、Range 分区：将一定范围内的数据映射到一个分区中，尽量保证每个分区数据均匀，而且分区间有序
+
+3、用户自定义分区
+
+```
+/**
+  * 自定义分区器
+  * 1. 继承Partitioner
+  * 2. 重写方法，一共有两个。
+  */
+class MyPartitioner extends Partitioner{
+    // 分区数量
+    override def numPartitions: Int = 3
+
+    // 根据数据的key值返回数据所在的分区索引（从0开始）
+    override def getPartition(key: Any): Int = {
+        key match {
+            case "nba" => 0
+            case "wnba" => 1
+            case _ => 2
+        }
+    }
+}
+
+
+def main(args: Array[String]): Unit = {
+    val sparConf = new SparkConf().setMaster("local").setAppName("WordCount")
+    val sc = new SparkContext(sparConf)
+
+    val rdd = sc.makeRDD(List(
+        ("nba", "xxxxxxxxx"),
+        ("cba", "xxxxxxxxx"),
+        ("wnba", "xxxxxxxxx"),
+        ("nba", "xxxxxxxxx"),
+    ),3)
+    val partRDD: RDD[(String, String)] = rdd.partitionBy( new MyPartitioner )
+
+    partRDD.saveAsTextFile("output")
+
+    sc.stop()
+}
+```
+
+### 2、累加器
+
+累加器用来把 Executor 端变量信息聚合到 Driver 端。在 Driver 程序中定义的变量，在Executor 端的每个 Task 都会得到这个变量的一份新的副本，每个 task 更新这些副本的值后，传回 Driver 端进行 merge。
+
+如果不使用累加器，则Executor端的数据不会回传到Driver，所以打印结果为0
+
+```
+val rdd = sc.makeRDD(List(1,2,3,4))
+
+// 获取系统累加器
+// Spark默认就提供了简单数据聚合的累加器
+val sumAcc = sc.longAccumulator("sum")
+
+//sc.doubleAccumulator
+//sc.collectionAccumulator
+
+rdd.foreach(
+    num => {
+        // 使用累加器
+        sumAcc.add(num)
+    }
+)
+// 获取累加器的值
+println(sumAcc.value)
+```
+
+### 3、广播变量
+
+广播变量用来高效分发较大的对象。向所有工作节点发送一个较大的只读值，以供一个或多个 Spark 操作使用。比如，如果你的应用需要向所有节点发送一个较大的只读查询表。在多个并行操作中使用同一个变量，但是 Spark 会为每个任务分别发送。每个task中包含一份数据。
+
+广播之后，是每个executor一份数据。一个executor就是一个JVM
+
+```
+
+val rdd1 = sc.makeRDD(List(
+    ("a", 1),("b", 2),("c", 3)
+))
+val map = mutable.Map(("a", 4),("b", 5),("c", 6))
+
+// 封装广播变量
+val bc: Broadcast[mutable.Map[String, Int]] = sc.broadcast(map)
+
+rdd1.map {
+    case (w, c) => {
+        // 方法广播变量
+        val l: Int = bc.value.getOrElse(w, 0)
+        (w, (c, l))
+    }
+}.collect().foreach(println)
+```
+
